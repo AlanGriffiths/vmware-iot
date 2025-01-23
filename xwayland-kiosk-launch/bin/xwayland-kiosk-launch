@@ -67,10 +67,7 @@ else
   exit 1
 fi
 
-## # Launch Xwayland.
-## SNAPPY_PRELOAD=$SNAP \
-## LD_PRELOAD=$SNAP/usr/local/lib/libxwayland-preload.so \
-  $SNAP/usr/bin/Xwayland -terminate :${port} &
+$SNAP/usr/bin/Xwayland -terminate :${port} &
 
 trap "trap - SIGTERM EXIT && kill -- -$$" SIGINT SIGTERM SIGQUIT EXIT # kill on signal or quit
 sleep 1 # FIXME - Xwayland does emit SIGUSR1 when ready for client connections
