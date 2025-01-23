@@ -1,0 +1,87 @@
+#!/bin/bash
+set -e
+
+# This snap provides both an X11 server and an X11 client which needs to connect to it. To allow
+# this to work correctly, need to be both an X11 slot and X11 plug, and have them connected.
+# Detect the X11 plug/slot connected by verifying access to fontconfig directory.
+attempted_open=$(ls "/var/cache/fontconfig/" 2>&1) || true;
+
+if [[ $attempted_open = *"Permission denied"* ]]; then
+  echo "##################################################################################"
+  echo "If you are experiencing problems with your GUI app (e.g. bad fonts), please run:"
+  echo "  snap connect $SNAP_NAME:x11-plug $SNAP_NAME:x11"
+  echo "##################################################################################"
+fi
+
+# If necessary, set up minimal environment for Xwayland to function
+if [ -z ${LIBGL_DRIVERS_PATH+x} ]; then
+  if [ "$SNAP_ARCH" == "amd64" ]; then
+    ARCH="x86_64-linux-gnu"
+  elif [ "$SNAP_ARCH" == "armhf" ]; then
+    ARCH="arm-linux-gnueabihf"
+  elif [ "$SNAP_ARCH" == "arm64" ]; then
+    ARCH="aarch64-linux-gnu"
+  else
+    ARCH="$SNAP_ARCH-linux-gnu"
+  fi
+
+  export LIBGL_DRIVERS_PATH=$SNAP/usr/lib/$ARCH/dri
+fi
+
+# Use new port number in case old server clean up wasn't successful
+let port=$RANDOM%100
+# Avoid low numbers as they may be used by desktop
+let port+=4
+
+# We need a simple window manager to make the client application fullscreen.
+# i3 is a lightweight and flexible choice. It requires a configuration file to
+# behave correctly. Provide 2 options to snaps:
+#  1. Set an "XWAYLAND_I3_CONFIG_FILE" variable with path to such a file
+#  2. Set an "XWAYLAND_FULLSCREEN_WINDOW_HINT" variable with the X11 window name
+#     that should be fullscreened. A suitable i3 config file will be auto-generated.
+if [ -n "${XWAYLAND_I3_CONFIG_FILE-}" ]; then
+  # Check it exists
+  if [ ! -f "${XWAYLAND_I3_CONFIG_FILE}" ]; then
+    echo "ERROR: specified i3 config file '${XWAYLAND_I3_CONFIG_FILE}' does not exist"
+    exit 1
+  fi
+  I3_CONFIG="${XWAYLAND_I3_CONFIG_FILE}"
+elif [ -n "${XWAYLAND_FULLSCREEN_WINDOW_HINT-}" ]; then
+  # Am using i3 here, so generate a simple config file for it.
+  I3_CONFIG=$SNAP_USER_DATA/i3.config
+
+  cat <<EOF > "$I3_CONFIG"
+# i3 config file (v4)
+font pango:monospace 8
+# set window for fullscreen
+for_window [${XWAYLAND_FULLSCREEN_WINDOW_HINT}] fullscreen
+EOF
+
+else
+  echo "#################################################################################"
+  echo "ERROR: The internal i3 window manager has not been configured."
+  echo ""
+  echo "To rectify, consult the instructions in"
+  echo "https://github.com/MirServer/xwayland-kiosk-helper/blob/master/snapcraft.yaml"
+  echo "#################################################################################"
+  exit 1
+fi
+
+## # Launch Xwayland.
+## SNAPPY_PRELOAD=$SNAP \
+## LD_PRELOAD=$SNAP/usr/local/lib/libxwayland-preload.so \
+  $SNAP/usr/bin/Xwayland -terminate :${port} &
+
+trap "trap - SIGTERM EXIT && kill -- -$$" SIGINT SIGTERM SIGQUIT EXIT # kill on signal or quit
+sleep 1 # FIXME - Xwayland does emit SIGUSR1 when ready for client connections
+
+# Set the X environment
+export DISPLAY=":${port}"
+export GDK_BACKEND="x11"
+export CLUTTER_BACKEND="x11"
+export QT_QPA_PLATFORM="xcb"
+
+$SNAP/usr/bin/i3 -c "$I3_CONFIG" &
+
+# Launch the X11 process passed in
+"$@"

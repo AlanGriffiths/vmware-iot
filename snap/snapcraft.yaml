@@ -1,0 +1,154 @@
+name: vmware-iot
+version: 0.1
+summary: vmware-view packaged for Ubuntu Core
+description: vmware-view packaged for Ubuntu Core
+confinement: strict
+grade: devel
+base: core24
+compression: lzo
+
+apps:
+  vmware-iot:
+    command-chain: &_command-chain
+      - bin/gpu-2404-wrapper
+      - bin/wayland-launch
+      - bin/xwayland-kiosk-launch
+      - bin/setup-vmware
+    command: &_command usr/bin/vmware-view
+    environment: &_environment
+      XWAYLAND_FULLSCREEN_WINDOW_HINT: title="VMware Horizon Client"
+      XKB_CONFIG_ROOT: $SNAP/usr/share/X11/xkb
+      XDG_CACHE_HOME:  $SNAP_USER_COMMON/.cache
+      XDG_CONFIG_HOME: $SNAP_USER_DATA/.config
+      XDG_CONFIG_DIRS: $SNAP/etc/xdg
+      XDG_DATA_DIRS:   $SNAP/usr/local/share:$SNAP/usr/share
+    plugs: &_plugs
+      - opengl
+      - wayland
+      - network-bind
+      - network
+      - hardware-observe
+
+  deamon:
+    daemon: simple
+    restart-delay: 3s
+    restart-condition: always
+    command-chain: *_command-chain
+    command: *_command
+    environment: *_environment
+    plugs: *_plugs
+
+plugs:
+  gpu-2404:
+    interface: content
+    target: $SNAP/gpu-2404
+    default-provider: mesa-2404
+
+parts:
+  xwayland-kiosk-launch:
+    plugin: dump
+    source: xwayland-kiosk-launch
+    build-packages:
+      - build-essential
+    stage-packages:
+      - xwayland
+      - i3
+      - xkb-data
+      - dmz-cursor-theme
+
+  setup-vmware:
+    plugin: dump
+    source: vmware-setup
+
+  vmware:
+    plugin: dump
+    source-type: deb
+    source: https://download3.omnissa.com/software/CART25FQ2_LIN64_DEBPKG_2406/VMware-Horizon-Client-2406-8.13.0-9995429239.x64.deb
+    stage-packages:
+      - libxtst6
+      - libpulse0
+      - libatk1.0-0t64
+      - libcairo2
+      - libxss1
+      - libgtk-3-0t64
+
+  setup:
+    plugin: dump
+    source: wayland-launch
+    override-build: |
+      # The plugs needed to run Wayland. (wayland-launch checks them, setup.sh connects them)
+      # You may add further plugs here if you want these options
+      PLUGS="opengl wayland gpu-2404 network-bind network hardware-observe"
+      sed --in-place "s/%PLUGS%/$PLUGS/g" $CRAFT_PART_BUILD/bin/wayland-launch
+      sed --in-place "s/%PLUGS%/$PLUGS/g" $CRAFT_PART_BUILD/bin/setup.sh
+      craftctl default
+    stage-packages:
+      - inotify-tools
+
+  # gsettings, pixbuf and immodules are not needed by all snaps,
+  # but they are so common a requirement include them here
+  gsettings+pixbuf+immodules:
+    plugin: nil
+    build-packages:
+      - libgdk-pixbuf2.0-0
+      - librsvg2-common
+      - shared-mime-info
+      - libgtk-3-0
+    override-build: |
+      craftctl default
+      # Update mime database
+      update-mime-database ${CRAFT_PART_INSTALL}/usr/share/mime
+      # build immodules cache
+      mkdir -p ${CRAFT_PART_INSTALL}/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/gtk-3.0/3.0.0/
+      /usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/libgtk-3-0t64/gtk-query-immodules-3.0 > ${CRAFT_PART_INSTALL}/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/gtk-3.0/3.0.0/immodules.cache
+    stage-packages:
+      #    - gnome-mastermind  # mastermind needs be here to install a gsettings schema: 'org.autistici.gnome-mastermind'
+      - librsvg2-common
+      - gsettings-desktop-schemas
+      - libglib2.0-bin
+      - xkb-data
+    override-prime: |
+      craftctl default
+      # Compile the gsettings schemas
+      /usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/glib-2.0/glib-compile-schemas "$CRAFT_PRIME/usr/share/glib-2.0/schemas"
+      # Index the pixbuf loaders
+      LOADERS_PATH=$(echo ${CRAFT_PRIME}/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/gdk-pixbuf-2.0/*/loaders)
+      QUERY_LOADERS=/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_ON}/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders
+      GDK_PIXBUF_MODULEDIR=${LOADERS_PATH} ${QUERY_LOADERS} > ${LOADERS_PATH}/../loaders.cache
+      sed s!$CRAFT_PRIME!!g --in-place ${LOADERS_PATH}/../loaders.cache
+
+  gpu-2404:
+    after:
+      - xwayland-kiosk-launch
+      - setup
+      - setup-vmware
+      - vmware
+      - gsettings+pixbuf+immodules
+        
+    source: https://github.com/canonical/gpu-snap.git
+    plugin: dump
+    override-prime: |
+      craftctl default
+      ${CRAFT_PART_SRC}/bin/gpu-2404-cleanup mesa-2404
+    prime:
+      - bin/gpu-2404-wrapper
+
+layout:
+  /usr/share/libdrm:
+    bind: $SNAP/gpu-2404/libdrm
+  /usr/share/drirc.d:
+    symlink: $SNAP/gpu-2404/drirc.d
+  # X11
+  /usr/bin/xkbcomp:
+    symlink: $SNAP/usr/bin/xkbcomp
+  /usr/share/X11:
+    bind: $SNAP/usr/share/X11
+  # GTK
+  /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/gdk-pixbuf-2.0:
+    bind: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/gdk-pixbuf-2.0
+  /usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/gtk-3.0:
+    bind: $SNAP/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/gtk-3.0
+  # vmware
+  /usr/lib/vmware:
+    bind: $SNAP/usr/lib/vmware
+
